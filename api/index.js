@@ -1,44 +1,61 @@
-     // api/index.js
-     const connectToDatabase = require('../db');
-     const mongoose = require('mongoose');
+// api/index.js  (Attendance API)
+const connectToDatabase = require('../db');
+const mongoose = require('mongoose');
 
-     // Define the database schema for the student project
-     const RecordSchema = new mongoose.Schema({
-       title: String,
-       content: String
-     }, { timestamps: true });
+// Same design as the midterm: one document per student, dates grow in an array
+const AttendanceSchema = new mongoose.Schema({
+  student_name: { type: String, required: true, trim: true },
+  subject_name: { type: String, required: true, trim: true },
+  section: { type: String, required: true, trim: true },
+  attendance_dates: [Date]
+}, { timestamps: true });
 
-     const Record = mongoose.models.Record || mongoose.model('Record', RecordSchema);
+const Attendance = mongoose.models.Attendance ||
+  mongoose.model('Attendance', AttendanceSchema, 'daily_attendance');
 
-     module.exports = async (req, res) => {
-       // Enable CORS so GitHub Pages can communicate with this API
-       res.setHeader('Access-Control-Allow-Credentials', true);
-       res.setHeader('Access-Control-Allow-Origin', '*');
-       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+module.exports = async (req, res) => {
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-       if (req.method === 'OPTIONS') {
-         return res.status(200).end();
-       }
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
-       try {
-         await connectToDatabase();
+  try {
+    await connectToDatabase();
 
-         // Handle fetching data (GET)
-         if (req.method === 'GET') {
-           const records = await Record.find({}).sort({ createdAt: -1 });
-           return res.status(200).json(records);
-         }
+    // GET: list all students with their attendance dates
+    if (req.method === 'GET') {
+      const records = await Attendance.find({}).sort({ student_name: 1 });
+      return res.status(200).json(records);
+    }
 
-         // Handle submitting new data (POST)
-         if (req.method === 'POST') {
-           const newRecord = await Record.create(req.body);
-           return res.status(201).json(newRecord);
-         }
+    // POST: mark a student present on a date (creates the student if new)
+    if (req.method === 'POST') {
+      const b = req.body || {};
+      const student_name = String(b.student_name || '').trim();
+      const subject_name = String(b.subject_name || '').trim();
+      const section = String(b.section || '').trim();
+      const date = String(b.date || '');
 
-         return res.status(405).json({ error: 'Method Not Allowed' });
-       } catch (error) {
-         console.error(error);
-         return res.status(500).json({ error: 'Database connection failed' });
-       }
-     };
+      if (!student_name || !subject_name || !section ||
+          [student_name, subject_name, section].some(s => s.length > 100) ||
+          !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ error: 'Invalid input' });
+      }
+
+      const day = new Date(date + 'T00:00:00Z');
+      const doc = await Attendance.findOneAndUpdate(
+        { student_name, subject_name, section },
+        { $addToSet: { attendance_dates: day } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+      return res.status(200).json(doc);
+    }
+
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: 'Database connection failed' });
+  }
+};
