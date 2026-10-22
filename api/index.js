@@ -7,17 +7,28 @@ const AttendanceSchema = new mongoose.Schema({
   student_name: { type: String, required: true, trim: true },
   subject_name: { type: String, required: true, trim: true },
   section: { type: String, required: true, trim: true },
-  attendance_dates: [Date]
+  attendance_dates: [Date],   // present (original design, unchanged)
+  late_dates: [Date],
+  absent_dates: [Date],
+  excused_dates: [Date]
 }, { timestamps: true });
 
 const Attendance = mongoose.models.Attendance ||
   mongoose.model('Attendance', AttendanceSchema, 'daily_attendance');
 
+const FIELDS = { present: 'attendance_dates', late: 'late_dates', absent: 'absent_dates', excused: 'excused_dates' };
+const CI = { locale: 'en', strength: 2 }; // case-insensitive matching
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
   if (req.method === 'OPTIONS') return res.status(200).end();
+
+  // Optional passcode: set API_KEY in Vercel to protect add/edit/delete
+  if (req.method !== 'GET' && process.env.API_KEY && req.headers['x-api-key'] !== process.env.API_KEY) {
+    return res.status(401).json({ error: 'Passcode required' });
+  }
 
   try {
     await connectToDatabase();
@@ -42,7 +53,7 @@ module.exports = async (req, res) => {
       if (!mongoose.isValidObjectId(b.id)) return res.status(400).json({ error: 'Invalid id' });
       const f = { student_name: clean(b.student_name), subject_name: clean(b.subject_name), section: clean(b.section) };
       if (Object.values(f).some(bad)) return res.status(400).json({ error: 'Invalid input' });
-      if (await Attendance.findOne({ ...f, _id: { $ne: b.id } })) return res.status(409).json({ error: 'A student with these details already exists' });
+      if (await Attendance.findOne({ ...f, _id: { $ne: b.id } }).collation(CI)) return res.status(409).json({ error: 'A student with these details already exists' });
       const doc = await Attendance.findByIdAndUpdate(b.id, f, { new: true });
       return doc ? res.status(200).json(doc) : res.status(404).json({ error: 'Not found' });
     }
@@ -71,15 +82,19 @@ module.exports = async (req, res) => {
 
       // POST: mark present (creates the student if new, never duplicates a date)
       if (req.method === 'POST') {
+        const status = String(b.status || 'present');
+        if (!FIELDS[status]) return res.status(400).json({ error: 'Invalid status' });
+        const others = {};
+        Object.values(FIELDS).forEach(f => { if (f !== FIELDS[status]) others[f] = day; });
         const doc = await Attendance.findOneAndUpdate(filter,
-          { $addToSet: { attendance_dates: day } },
-          { upsert: true, new: true, setDefaultsOnInsert: true });
+          { $addToSet: { [FIELDS[status]]: day }, $pull: others },
+          { upsert: true, new: true, setDefaultsOnInsert: true, collation: CI });
         return res.status(200).json(doc);
       }
 
       // DELETE: undo a wrongly marked date
       const doc = await Attendance.findOneAndUpdate(filter,
-        { $pull: { attendance_dates: day } }, { new: true });
+        { $pull: Object.fromEntries(Object.values(FIELDS).map(f => [f, day])) }, { new: true, collation: CI });
       return doc ? res.status(200).json(doc) : res.status(404).json({ error: 'Not found' });
     }
 
