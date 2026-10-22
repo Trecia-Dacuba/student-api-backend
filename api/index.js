@@ -15,7 +15,7 @@ const Attendance = mongoose.models.Attendance ||
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
@@ -25,6 +25,33 @@ module.exports = async (req, res) => {
     // GET: list all students with their attendance dates
     if (req.method === 'GET') {
       return res.status(200).json(await Attendance.find({}).sort({ student_name: 1 }));
+    }
+
+    const clean = v => String(v || '').trim();
+    const bad = v => !v || v.length > 100;
+
+    // PATCH: edit one student by id, or rename a whole section/subject
+    if (req.method === 'PATCH') {
+      const b = req.body || {};
+      if (b.rename) {
+        const field = b.rename.field, from = clean(b.rename.from), to = clean(b.rename.to);
+        if (!['section', 'subject_name'].includes(field) || !from || bad(to)) return res.status(400).json({ error: 'Invalid input' });
+        const r = await Attendance.updateMany({ [field]: from }, { $set: { [field]: to } });
+        return res.status(200).json({ modified: r.modifiedCount });
+      }
+      if (!mongoose.isValidObjectId(b.id)) return res.status(400).json({ error: 'Invalid id' });
+      const f = { student_name: clean(b.student_name), subject_name: clean(b.subject_name), section: clean(b.section) };
+      if (Object.values(f).some(bad)) return res.status(400).json({ error: 'Invalid input' });
+      if (await Attendance.findOne({ ...f, _id: { $ne: b.id } })) return res.status(409).json({ error: 'A student with these details already exists' });
+      const doc = await Attendance.findByIdAndUpdate(b.id, f, { new: true });
+      return doc ? res.status(200).json(doc) : res.status(404).json({ error: 'Not found' });
+    }
+
+    // DELETE with student_id: remove the whole student record
+    if (req.method === 'DELETE' && req.body && req.body.student_id) {
+      if (!mongoose.isValidObjectId(req.body.student_id)) return res.status(400).json({ error: 'Invalid id' });
+      const doc = await Attendance.findByIdAndDelete(req.body.student_id);
+      return doc ? res.status(200).json({ deleted: true }) : res.status(404).json({ error: 'Not found' });
     }
 
     if (req.method === 'POST' || req.method === 'DELETE') {
