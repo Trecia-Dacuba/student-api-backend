@@ -10,7 +10,8 @@ const AttendanceSchema = new mongoose.Schema({
   attendance_dates: [Date],   // present (original design, unchanged)
   late_dates: [Date],
   absent_dates: [Date],
-  excused_dates: [Date]
+  excused_dates: [Date],
+  start_date: Date            // first day that counts for this student
 }, { timestamps: true });
 
 const Attendance = mongoose.models.Attendance ||
@@ -68,7 +69,13 @@ module.exports = async (req, res) => {
       const f = { student_name: clean(b.student_name), subject_name: clean(b.subject_name), section: clean(b.section) };
       if (Object.values(f).some(bad)) return res.status(400).json({ error: 'Invalid input' });
       if (await Attendance.findOne({ ...f, _id: { $ne: b.id } }).collation(CI)) return res.status(409).json({ error: 'A student with these details already exists' });
-      const doc = await Attendance.findByIdAndUpdate(b.id, f, { new: true });
+      const upd = { $set: f };
+      if (typeof b.start_date === 'string') {
+        if (b.start_date === '') upd.$unset = { start_date: 1 };
+        else if (/^\d{4}-\d{2}-\d{2}$/.test(b.start_date) && !isNaN(new Date(b.start_date + 'T00:00:00Z'))) upd.$set.start_date = new Date(b.start_date + 'T00:00:00Z');
+        else return res.status(400).json({ error: 'Invalid start date' });
+      }
+      const doc = await Attendance.findByIdAndUpdate(b.id, upd, { new: true });
       return doc ? res.status(200).json(doc) : res.status(404).json({ error: 'Not found' });
     }
 
@@ -86,8 +93,9 @@ module.exports = async (req, res) => {
         const d = body0.restore, f = { student_name: clean(d.student_name), subject_name: clean(d.subject_name), section: clean(d.section) };
         if (Object.values(f).some(bad)) return res.status(400).json({ error: 'Invalid input' });
         if (await Attendance.findOne(f).collation(CI)) return res.status(409).json({ error: 'A student with these details already exists' });
+        const sd = d.start_date ? new Date(d.start_date) : null;
         const arr = k => (Array.isArray(d[k]) ? d[k] : []).map(x => new Date(x)).filter(x => !isNaN(x));
-        const doc = await Attendance.create({ ...f, attendance_dates: arr('attendance_dates'), late_dates: arr('late_dates'), absent_dates: arr('absent_dates'), excused_dates: arr('excused_dates') });
+        const doc = await Attendance.create({ ...f, attendance_dates: arr('attendance_dates'), late_dates: arr('late_dates'), absent_dates: arr('absent_dates'), excused_dates: arr('excused_dates'), ...(sd && !isNaN(sd) ? { start_date: sd } : {}) });
         return res.status(201).json(doc);
       }
 
@@ -119,7 +127,7 @@ module.exports = async (req, res) => {
         const others = {};
         Object.values(FIELDS).forEach(f => { if (f !== FIELDS[status]) others[f] = day; });
         const doc = await Attendance.findOneAndUpdate(filter,
-          { $addToSet: { [FIELDS[status]]: day }, $pull: others },
+          { $addToSet: { [FIELDS[status]]: day }, $pull: others, $min: { start_date: day } },
           { upsert: true, new: true, setDefaultsOnInsert: true, collation: CI });
         return res.status(200).json(doc);
       }
