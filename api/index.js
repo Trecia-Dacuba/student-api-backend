@@ -41,6 +41,20 @@ module.exports = async (req, res) => {
     const clean = v => String(v || '').trim();
     const bad = v => !v || v.length > 100;
 
+    // POST with restore: bring back a deleted student with all their dates
+    if (req.method === 'POST' && req.body && req.body.restore) {
+      const d = req.body.restore;
+      const f = { student_name: clean(d.student_name), subject_name: clean(d.subject_name), section: clean(d.section) };
+      if (Object.values(f).some(bad)) return res.status(400).json({ error: 'Invalid input' });
+      if (await Attendance.findOne(f).collation(CI)) return res.status(409).json({ error: 'A student with these details already exists' });
+      const dates = k => (Array.isArray(d[k]) ? d[k] : []).map(x => new Date(x)).filter(x => !isNaN(x));
+      const doc = await Attendance.create({
+        ...(mongoose.isValidObjectId(d._id) ? { _id: d._id } : {}), ...f,
+        ...Object.fromEntries(Object.values(FIELDS).map(k => [k, dates(k)]))
+      });
+      return res.status(201).json(doc);
+    }
+
     // PATCH: edit one student by id, or rename a whole section/subject
     if (req.method === 'PATCH') {
       const b = req.body || {};
@@ -65,6 +79,20 @@ module.exports = async (req, res) => {
       return doc ? res.status(200).json({ deleted: true }) : res.status(404).json({ error: 'Not found' });
     }
 
+    // POST: restore a deleted student (powers the Undo after delete)
+    const body0 = req.body || {};
+    if (req.method === 'POST' && body0.restore) {
+      if (body0.restore) {
+        const d = body0.restore, f = { student_name: clean(d.student_name), subject_name: clean(d.subject_name), section: clean(d.section) };
+        if (Object.values(f).some(bad)) return res.status(400).json({ error: 'Invalid input' });
+        if (await Attendance.findOne(f).collation(CI)) return res.status(409).json({ error: 'A student with these details already exists' });
+        const arr = k => (Array.isArray(d[k]) ? d[k] : []).map(x => new Date(x)).filter(x => !isNaN(x));
+        const doc = await Attendance.create({ ...f, attendance_dates: arr('attendance_dates'), late_dates: arr('late_dates'), absent_dates: arr('absent_dates'), excused_dates: arr('excused_dates') });
+        return res.status(201).json(doc);
+      }
+
+    }
+
     if (req.method === 'POST' || req.method === 'DELETE') {
       const b = req.body || {};
       const student_name = String(b.student_name || '').trim();
@@ -83,6 +111,10 @@ module.exports = async (req, res) => {
       // POST: mark present (creates the student if new, never duplicates a date)
       if (req.method === 'POST') {
         const status = String(b.status || 'present');
+        if (status === 'none') { // create the student without marking a date
+          const doc = (await Attendance.findOne(filter).collation(CI)) || (await Attendance.create(filter));
+          return res.status(200).json(doc);
+        }
         if (!FIELDS[status]) return res.status(400).json({ error: 'Invalid status' });
         const others = {};
         Object.values(FIELDS).forEach(f => { if (f !== FIELDS[status]) others[f] = day; });
